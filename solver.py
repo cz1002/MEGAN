@@ -25,9 +25,9 @@ class Solver(object):
         self.lambda_cls = hyperparameters['lambda_cls']
         self.lambda_gp = hyperparameters['lambda_gp']
         # fix the noise used in sampling
-        display_size = int(hyperparameters['display_size'])
+        batch_size = int(hyperparameters['batch_size'])
         # randn()返回一个张量，包含了从标准正态分布中抽取一组随机数，形状由可变参数sizes定义
-        self.style = torch.randn(display_size, self.style_dim, 1, 1).to(self.device)
+
         # Setup the optimizers
         self.beta1 = hyperparameters['beta1']
         self.beta2 = hyperparameters['beta2']
@@ -153,7 +153,7 @@ class Solver(object):
             # encode
             content_fake, _ = self.G.encode(x_real,c_trg)
             # decode
-            x_fake = self.G.decode(content_fake, style)
+            x_fake = self.G.decode(content_fake, style, c_trg)
             out_src, out_cls = self.D(x_fake.detach())
             d_loss_fake = torch.mean(out_src)  # 假图像为0
             alpha = torch.rand(x_real.size(0), 1, 1, 1).to(self.device)
@@ -181,24 +181,25 @@ class Solver(object):
                 content_real, style_real = self.G.encode(x_real, c_org)
                 content_fake, style_fake = self.G.encode(x_real, c_trg)
 
-                x_fake = self.G.decode(content_fake, style)
+                x_fake = self.G.decode(content_fake, style, c_trg)
                 out_src, out_cls = self.D(x_fake)
                 g_loss_fake = - torch.mean(out_src)
                 g_loss_cls = self.classification_loss(out_cls, label_trg)  # 估计标签越接近目标标签损失越小
-                x_recon = self.G.decode(content_real, style_real)
+                x_recon = self.G.decode(content_real, style_real, c_org)
                 g_loss_rec = torch.mean(torch.abs(x_real - x_recon))
 
                 # encode again
-                content_recon, style_recon = self.G.encode(x_fake, c_trg)
+                # content_recon, style_recon = self.G.encode(x_fake, c_trg)
                 # reconstruction loss
-                self.loss_gen_recon_style = self.recon_criterion(style_recon, style)
-                self.loss_gen_recon_content = self.recon_criterion(content_recon, content_fake)
+                # self.loss_gen_recon_style = self.recon_criterion(style_recon, style)
+                # self.loss_gen_recon_content = self.recon_criterion(content_recon, content_fake)
 
                 # Backward and optimize.生成网络参数更新
                 g_loss = g_loss_fake + self.lambda_rec * g_loss_rec + \
-                 self.lambda_cls * g_loss_cls + \
-                 self.recon_s_w * self.loss_gen_recon_style + \
-                 self.recon_c_w * self.loss_gen_recon_content
+                 self.lambda_cls * g_loss_cls
+                 # + \
+                 # self.recon_s_w * self.loss_gen_recon_style + \
+                 # self.recon_c_w * self.loss_gen_recon_content
 
                 self.reset_grad()
                 g_loss.backward()
@@ -208,8 +209,8 @@ class Solver(object):
                 loss['G/loss_fake'] = g_loss_fake.item()
                 loss['G/loss_rec'] = g_loss_rec.item()
                 loss['G/loss_cls'] = g_loss_cls.item()
-                loss['G/loss_style'] = self.loss_gen_recon_style.item()
-                loss['G/loss_content'] = self.loss_gen_recon_content.item()
+                # loss['G/loss_style'] = self.loss_gen_recon_style.item()
+                # loss['G/loss_content'] = self.loss_gen_recon_content.item()
 
 
             # Miscellaneous
@@ -227,9 +228,9 @@ class Solver(object):
                     style2 = Variable(torch.randn(x_fixed.size(0), self.style_dim, 1, 1).to(self.device))
                     x_fake_list = [x_fixed]
                     for c_fixed in c_fixed_list:
-                        content_fake, style_fake = self.G.encode(x_fixed[i].unsqueeze(0), c_fixed)
-                        x_fake_list.append(self.G.decode(content_fake, style1.unsqueeze(0)))
-                        x_fake_list.append(self.G.decode(content_fake, style2.unsqueeze(0)))
+                        content_fake, style_fake = self.G.encode(x_fixed, c_fixed)
+                        x_fake_list.append(self.G.decode(content_fake, style1, c_fixed))
+                        x_fake_list.append(self.G.decode(content_fake, style2, c_fixed))
                     x_concat = torch.cat(x_fake_list, dim=3)
                     sample_path = os.path.join(self.output_path, '{}-images.jpg'.format(i + 1))
                     save_image(self.denorm(x_concat.data.cpu()), sample_path, nrow=1, padding=0)
@@ -263,22 +264,21 @@ class Solver(object):
 
                 # Prepare input images and target domain labels.
                 x_real = x_real.to(self.device)
-                c_trg_list = self.create_labels(c_org, self.c_dim, self.dataset, self.selected_attrs)
+                c_trg_list = self.create_labels(c_org, 8)
 
                 # Translate images.
                 x_fake_list = [x_real]
-                style_rand = Variable(torch.randn(self.num_style, self.style_dim, 1, 1).cuda())
-                for j in range(self.num_style):
-                    s = style_rand[j].unsqueeze(0)
-                    for c_trg in c_trg_list:
-                        content_fake, style_fake = self.G.encode(x_real, c_trg)
-                        x_fake_list.append(self.G.decode(content_fake, s))
+                style_rand = Variable(torch.randn(x_real.size(0), self.style_dim, 1, 1).cuda())
 
-                        # Save the translated images.
-                        x_concat = torch.cat(x_fake_list, dim=3)
-                        result_path = os.path.join(self.result_dir, '{}-images.jpg'.format(i + 1))
-                        save_image(self.denorm(x_concat.data.cpu()), result_path, nrow=1, padding=0)
-                        print('Saved real and fake images into {}...'.format(result_path))
+                for c_trg in c_trg_list:
+                    content_fake, style_fake = self.G.encode(x_real, c_trg)
+                    x_fake_list.append(self.G.decode(content_fake, style_rand, c_trg))
+
+                    # Save the translated images.
+                    x_concat = torch.cat(x_fake_list, dim=3)
+                    result_path = os.path.join(self.result_dir, '{}-images.jpg'.format(i + 1))
+                    save_image(self.denorm(x_concat.data.cpu()), result_path, nrow=1, padding=0)
+                    print('Saved real and fake images into {}...'.format(result_path))
 
     def restore_model(self, resume_iters):
         """Restore the trained generator and discriminator."""

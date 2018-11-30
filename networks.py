@@ -69,8 +69,8 @@ class AdaINGen(nn.Module):
         # content encoder 融入了标签
         self.enc_content = ContentEncoder(n_downsample, n_res, input_dim, dim, 'in', activ, pad_type=pad_type)
 
-        # decoder 没有变化
-        self.dec = Decoder(n_downsample, n_res, self.enc_content.output_dim, 3, res_norm='adain', activ=activ, pad_type=pad_type)
+        # decoder 融入了标签
+        self.dec = Decoder(n_downsample, n_res, self.enc_content.output_dim + input_dim, 3, res_norm='adain', activ=activ, pad_type=pad_type)
 
         # MLP to generate AdaIN parameters
         self.mlp = MLP(style_dim, self.get_num_adain_params(self.dec), mlp_dim, 3, norm='none', activ=activ)
@@ -78,7 +78,7 @@ class AdaINGen(nn.Module):
     def forward(self, images, label):
         # reconstruct an image
         content_fake, style_fake = self.encode(images, label)
-        images_recon = self.decode(content_fake, style_fake)
+        images_recon = self.decode(content_fake, style_fake, label)
         return images_recon
 
     def encode(self, images, label):
@@ -87,11 +87,11 @@ class AdaINGen(nn.Module):
         content_fake = self.enc_content(images, label)
         return content_fake, style_fake
 
-    def decode(self, content, style):
+    def decode(self, content, style, label):
         # decode content and style codes to an image
         adain_params = self.mlp(style)
         self.assign_adain_params(adain_params, self.dec)
-        images = self.dec(content)
+        images = self.dec(content, label)
         return images
 
     def assign_adain_params(self, adain_params, model):
@@ -180,7 +180,10 @@ class Decoder(nn.Module):
         self.model += [Conv2dBlock(dim, output_dim, 7, 1, 3, norm='none', activation='tanh', pad_type=pad_type)]
         self.model = nn.Sequential(*self.model)
 
-    def forward(self, x):
+    def forward(self, x, label):
+        label = label.view(label.size(0), label.size(1), 1, 1)
+        label = label.repeat(1, 1, x.size(2), x.size(3))
+        x = torch.cat([x, label], dim=1)
         return self.model(x)
 
 ##################################################################################
