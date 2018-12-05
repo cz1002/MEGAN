@@ -17,6 +17,7 @@ parser.add_argument('--result_dir', type=str, default='megan/results')
 parser.add_argument('--mode', type=str, default='train', choices=['train', 'test'])
 parser.add_argument('--seed', type=int, default=10, help="random seed")
 parser.add_argument('--num_style',type=int, default=10, help="number of styles to sample")
+parser.add_argument('--log_path', type=str, default='megan/logs')
 
 opts = parser.parse_args()
 
@@ -24,6 +25,8 @@ opts = parser.parse_args()
 cudnn.benchmark = True
 
 # Create directories if not exist.
+if not os.path.exists(opts.log_path):
+    os.makedirs(opts.log_path)
 if not os.path.exists(opts.model_save_dir):
     os.makedirs(opts.model_save_dir)
 if not os.path.exists(opts.output_path):

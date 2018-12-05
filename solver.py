@@ -9,11 +9,13 @@ import numpy as np
 import time
 import datetime
 from torchvision.utils import save_image
+from tensorboardX import SummaryWriter
 
 class Solver(object):
     """Solver for training and testing StarGAN."""
 
     def __init__(self, face_loader, hyperparameters, opts):
+        self.model_name = os.path.splitext(os.path.basename(opts.config))[0]
         self.face_loader = face_loader
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.style_dim = hyperparameters['gen']['style_dim']
@@ -44,6 +46,7 @@ class Solver(object):
         self.lr_update_step = hyperparameters['lr_update_step']
         self.result_dir = opts.result_dir
         self.num_style = opts.num_style
+        self.log_path = opts.log_path
 
         self.build_model()
 
@@ -113,6 +116,7 @@ class Solver(object):
         return torch.mean(torch.abs(input - target))
 
     def train(self):
+        writer = SummaryWriter(os.path.join(self.log_path, self.model_name))
         data_loader = self.face_loader
         data_iter = iter(data_loader)
         # x_fixed表示图像像素值 c_org表示真实标签值
@@ -189,17 +193,16 @@ class Solver(object):
                 g_loss_rec = torch.mean(torch.abs(x_real - x_recon))
 
                 # encode again
-                # content_recon, style_recon = self.G.encode(x_fake, c_trg)
+                content_recon, style_recon = self.G.encode(x_fake, c_trg)
                 # reconstruction loss
-                # self.loss_gen_recon_style = self.recon_criterion(style_recon, style)
-                # self.loss_gen_recon_content = self.recon_criterion(content_recon, content_fake)
+                loss_gen_recon_style = self.recon_criterion(style_recon, style)
+                loss_gen_recon_content = self.recon_criterion(content_recon, content_fake)
 
                 # Backward and optimize.生成网络参数更新
                 g_loss = g_loss_fake + self.lambda_rec * g_loss_rec + \
-                 self.lambda_cls * g_loss_cls
-                 # + \
-                 # self.recon_s_w * self.loss_gen_recon_style + \
-                 # self.recon_c_w * self.loss_gen_recon_content
+                 self.lambda_cls * g_loss_cls + \
+                 self.recon_s_w * loss_gen_recon_style + \
+                 self.recon_c_w * loss_gen_recon_content
 
                 self.reset_grad()
                 g_loss.backward()
@@ -209,8 +212,8 @@ class Solver(object):
                 loss['G/loss_fake'] = g_loss_fake.item()
                 loss['G/loss_rec'] = g_loss_rec.item()
                 loss['G/loss_cls'] = g_loss_cls.item()
-                # loss['G/loss_style'] = self.loss_gen_recon_style.item()
-                # loss['G/loss_content'] = self.loss_gen_recon_content.item()
+                loss['G/loss_style'] = loss_gen_recon_style.item()
+                loss['G/loss_content'] = loss_gen_recon_content.item()
 
 
             # Miscellaneous
@@ -251,6 +254,19 @@ class Solver(object):
                 self.update_lr(g_lr, d_lr)
                 print ('Decayed learning rates, g_lr: {}, d_lr: {}.'.format(g_lr, d_lr))
 
+            if (i + 1) % self.log_iter == 0:
+                writer.add_scalar('D/loss_real', d_loss_real, i)
+                writer.add_scalar('D/loss_fake', d_loss_fake, i)
+                writer.add_scalar('D/loss_cls', d_loss_cls, i)
+                writer.add_scalar('G/loss_fake', g_loss_fake, i)
+                writer.add_scalar('G/loss_rec', g_loss_rec, i)
+                writer.add_scalar('G/loss_cls', g_loss_cls, i)
+                writer.add_scalar('G/loss_style', loss_gen_recon_style, i)
+                writer.add_scalar('G/loss_content', loss_gen_recon_content, i)
+                writer.add_scalars('data/scalar_group', {'D/loss': d_loss, 'G/loss': g_loss}, i)
+
+        writer.close()
+
     def test(self):
         """Translate images using StarGAN trained on a single dataset."""
         # Load the trained generator.
@@ -268,11 +284,13 @@ class Solver(object):
 
                 # Translate images.
                 x_fake_list = [x_real]
-                style_rand = Variable(torch.randn(x_real.size(0), self.style_dim, 1, 1).cuda())
 
                 for c_trg in c_trg_list:
                     content_fake, style_fake = self.G.encode(x_real, c_trg)
-                    x_fake_list.append(self.G.decode(content_fake, style_rand, c_trg))
+                    style_rand = Variable(torch.randn(self.num_style, self.style_dim, 1, 1).cuda())
+                    for j in range(self.num_style):
+                        s = style_rand[j].unsqueeze(0)
+                        x_fake_list.append(self.G.decode(content_fake, s, c_trg))
 
                     # Save the translated images.
                     x_concat = torch.cat(x_fake_list, dim=3)
